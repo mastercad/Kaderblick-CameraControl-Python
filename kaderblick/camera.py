@@ -39,6 +39,10 @@ class Camera:
         self.config = config or CameraConfig()
         self._is_open = False
         self._capture = None
+        self._recording = False
+        self._video_writer = None
+        self._recording_filepath = None
+        self._cv2 = None
         
         logger.info(f"Initializing {self.name} with device ID {device_id}")
 
@@ -50,10 +54,12 @@ class Camera:
             CameraConnectionError: If connection fails
         """
         try:
-            # Import cv2 only when needed
-            import cv2
+            # Import cv2 only when needed and cache it
+            if self._cv2 is None:
+                import cv2
+                self._cv2 = cv2
             
-            self._capture = cv2.VideoCapture(self.device_id)
+            self._capture = self._cv2.VideoCapture(self.device_id)
             
             if not self._capture.isOpened():
                 raise CameraConnectionError(
@@ -74,31 +80,29 @@ class Camera:
 
     def _apply_config(self) -> None:
         """Apply configuration settings to camera."""
-        if not self._capture:
+        if not self._capture or not self._cv2:
             return
-
-        import cv2
         
         resolution = self.config.get("resolution")
         if resolution:
-            self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
-            self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
+            self._capture.set(self._cv2.CAP_PROP_FRAME_WIDTH, resolution[0])
+            self._capture.set(self._cv2.CAP_PROP_FRAME_HEIGHT, resolution[1])
         
         fps = self.config.get("fps")
         if fps:
-            self._capture.set(cv2.CAP_PROP_FPS, fps)
+            self._capture.set(self._cv2.CAP_PROP_FPS, fps)
         
         brightness = self.config.get("brightness")
         if brightness is not None:
-            self._capture.set(cv2.CAP_PROP_BRIGHTNESS, brightness / 100.0)
+            self._capture.set(self._cv2.CAP_PROP_BRIGHTNESS, brightness / 100.0)
         
         contrast = self.config.get("contrast")
         if contrast is not None:
-            self._capture.set(cv2.CAP_PROP_CONTRAST, contrast / 100.0)
+            self._capture.set(self._cv2.CAP_PROP_CONTRAST, contrast / 100.0)
         
         saturation = self.config.get("saturation")
         if saturation is not None:
-            self._capture.set(cv2.CAP_PROP_SATURATION, saturation / 100.0)
+            self._capture.set(self._cv2.CAP_PROP_SATURATION, saturation / 100.0)
 
     def close(self) -> None:
         """Close camera device connection."""
@@ -125,10 +129,8 @@ class Camera:
         Raises:
             CameraOperationError: If capture fails
         """
-        if not self._is_open:
+        if not self._is_open or not self._cv2:
             raise CameraOperationError(f"{self.name} is not open")
-
-        import cv2
         
         ret, frame = self._capture.read()
         
@@ -139,7 +141,7 @@ class Camera:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filepath = f"{self.name}_{timestamp}.jpg"
         
-        cv2.imwrite(filepath, frame)
+        self._cv2.imwrite(filepath, frame)
         logger.info(f"{self.name} captured image: {filepath}")
         
         return filepath
@@ -158,10 +160,8 @@ class Camera:
         Raises:
             CameraOperationError: If recording fails to start
         """
-        if not self._is_open:
+        if not self._is_open or not self._cv2:
             raise CameraOperationError(f"{self.name} is not open")
-
-        import cv2
         
         if filepath is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -170,8 +170,8 @@ class Camera:
         fps = self.config.get("fps", 30)
         resolution = self.config.get("resolution", (1920, 1080))
         
-        fourcc = cv2.VideoWriter_fourcc(*codec)
-        self._video_writer = cv2.VideoWriter(filepath, fourcc, fps, resolution)
+        fourcc = self._cv2.VideoWriter_fourcc(*codec)
+        self._video_writer = self._cv2.VideoWriter(filepath, fourcc, fps, resolution)
         
         if not self._video_writer.isOpened():
             raise CameraOperationError(f"Failed to start recording on {self.name}")
@@ -184,7 +184,7 @@ class Camera:
 
     def write_frame(self) -> None:
         """Write a frame during recording."""
-        if not hasattr(self, '_recording') or not self._recording:
+        if not self._recording:
             return
         
         ret, frame = self._capture.read()
@@ -198,13 +198,15 @@ class Camera:
         Returns:
             Path to recorded video file, or None if not recording
         """
-        if not hasattr(self, '_recording') or not self._recording:
+        if not self._recording:
             logger.warning(f"{self.name} is not recording")
             return None
         
-        self._video_writer.release()
+        if self._video_writer:
+            self._video_writer.release()
         self._recording = False
         filepath = self._recording_filepath
+        self._recording_filepath = None
         logger.info(f"{self.name} stopped recording: {filepath}")
         
         return filepath
@@ -219,7 +221,7 @@ class Camera:
         Raises:
             CameraOperationError: If camera is not open
         """
-        if not self._is_open:
+        if not self._is_open or not self._cv2:
             raise CameraOperationError(f"{self.name} is not open")
         
         return self._capture.read()
